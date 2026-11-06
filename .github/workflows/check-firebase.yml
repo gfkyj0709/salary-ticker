@@ -1,0 +1,35 @@
+# Manual smoke test: anonymous login → write → read on Firestore
+# 수동 점검: 익명 로그인 → 쓰기 → 읽기 (Firebase 콘솔 설정 확인용)
+name: Check Firebase
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Smoke test
+        run: |
+          KEY=$(jq -r '.client[0].api_key[0].current_key' app/google-services.json)   # API key / API 키
+          PID=$(jq -r '.project_info.project_id' app/google-services.json)            # Project ID / 프로젝트 ID
+          echo "== 1. anonymous sign-in / 익명 로그인"
+          R=$(curl -s -X POST "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=$KEY" -H 'Content-Type: application/json' -d '{"returnSecureToken":true}')
+          TOKEN=$(echo "$R" | jq -r '.idToken // empty'); UID_=$(echo "$R" | jq -r '.localId // empty')
+          [ -n "$TOKEN" ] || { echo "FAIL auth: $R"; exit 1; }
+          echo "OK uid=$UID_"
+          DOC="https://firestore.googleapis.com/v1/projects/$PID/databases/(default)/documents/daily_rankings/ci-test/users/$UID_"
+          echo "== 2. valid write / 정상 쓰기"
+          W=$(curl -s -X PATCH "$DOC" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d '{"fields":{"nickname":{"stringValue":"ci"},"rate":{"doubleValue":5.5},"accMs":{"integerValue":"1000"},"since":{"integerValue":"0"}}}')
+          echo "$W" | jq -e '.name' >/dev/null || { echo "FAIL write: $W"; exit 1; }
+          echo "OK"
+          echo "== 3. cheat write must be rejected / 조작값 거부 확인"
+          C=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH "$DOC" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d '{"fields":{"nickname":{"stringValue":"ci"},"rate":{"doubleValue":9999},"accMs":{"integerValue":"1000"},"since":{"integerValue":"0"}}}')
+          [ "$C" = "403" ] && echo "OK rejected" || { echo "FAIL rules not applied (http $C)"; exit 1; }
+          echo "== 4. public read / 공개 읽기"
+          G=$(curl -s "$DOC"); echo "$G" | jq -e '.fields.nickname' >/dev/null && echo "OK" || { echo "FAIL read: $G"; exit 1; }
+          echo "== cleanup / 정리"
+          curl -s -X DELETE "$DOC" -H "Authorization: Bearer $TOKEN" >/dev/null; echo done
