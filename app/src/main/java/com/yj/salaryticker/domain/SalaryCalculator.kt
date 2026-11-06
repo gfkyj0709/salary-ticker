@@ -1,7 +1,9 @@
 package com.yj.salaryticker.domain
 
+import com.yj.salaryticker.data.PayType
 import com.yj.salaryticker.data.SalarySettings
 import com.yj.salaryticker.data.SessionState
+import java.time.LocalDate
 
 /**
  * Pure salary math (no Android dependency, easy to unit test).
@@ -10,16 +12,30 @@ import com.yj.salaryticker.data.SessionState
 object SalaryCalculator {
 
     /**
-     * Won earned per second.
-     * 초당 급여 = 월급 ÷ (월 근무일 × 하루 근무시간 × 3600).
+     * Monthly pay from annual or monthly input.
+     * 입력이 연봉이면 ÷12, 월급이면 그대로.
      *
      * @param s 급여 설정
+     * @return 월 급여(원)
+     */
+    fun monthlyPay(s: SalarySettings): Double = when (s.payType) {
+        PayType.ANNUAL -> s.payAmount / 12.0   // Annual → monthly / 연봉 → 월급
+        PayType.MONTHLY -> s.payAmount.toDouble() // Already monthly / 월급 그대로
+    }
+
+    /**
+     * Won earned per second.
+     * 초당 급여 = 월급 ÷ (이번 달 근무일 × 하루 근무시간 × 3600).
+     *
+     * @param s 급여 설정
+     * @param today 기준 날짜 (근무일 자동 계산용)
      * @return 초당 급여(원), 설정이 비어 있으면 0
      */
-    fun ratePerSecond(s: SalarySettings): Double {
-        val seconds = s.workDaysPerMonth * s.workHoursPerDay * 3600.0 // Monthly work seconds / 월 근무 초
-        if (s.monthlySalary <= 0L || seconds <= 0.0) return 0.0       // Guard invalid input / 잘못된 입력 방어
-        return s.monthlySalary / seconds                              // Core formula / 핵심 공식
+    fun ratePerSecond(s: SalarySettings, today: LocalDate = LocalDate.now()): Double {
+        val days = WorkCalendar.workDaysInMonth(today)          // Auto workdays / 자동 근무일
+        val seconds = days * s.workHoursPerDay * 3600.0         // Monthly work seconds / 월 근무 초
+        if (s.payAmount <= 0L || seconds <= 0.0) return 0.0     // Guard invalid input / 잘못된 입력 방어
+        return monthlyPay(s) / seconds                          // Core formula / 핵심 공식
     }
 
     /**

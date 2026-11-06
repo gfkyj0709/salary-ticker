@@ -50,8 +50,8 @@ fun CounterScreen(
         verticalArrangement = Arrangement.Center,             // Vertical center / 세로 가운데
     ) {
         // No salary yet → guide to settings / 월급 미설정 시 설정 유도
-        if (state.settings.monthlySalary <= 0L) {
-            Text("먼저 월급을 입력해줘", style = MaterialTheme.typography.titleMedium) // Guide text / 안내 문구
+        if (state.settings.payAmount <= 0L) {
+            Text("먼저 연봉이나 월급을 입력해줘", style = MaterialTheme.typography.titleMedium) // Guide text / 안내 문구
             Spacer(Modifier.height(16.dp))                                              // Gap / 간격
             Button(onClick = onGoSettings) { Text("설정하러 가기") }                     // Go settings / 설정 이동
             return@Column                                                                // Stop drawing / 이후 생략
