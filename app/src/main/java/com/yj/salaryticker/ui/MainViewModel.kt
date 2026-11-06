@@ -106,7 +106,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             .distinctUntilChanged()                                           // Skip duplicates / 같은 값 무시
             .debounce(1_500L)                                                 // Merge rapid taps / 연타 합치기
             .collect { (nick, rate, se) ->
-                leaderboard.submitMyState(nick, rate, se.accMs, se.runningSinceMs) // Upload / 업로드
+                leaderboard.submitMyState(nick, rate, se.accumulatedMs, se.runningSinceMs) // Upload / 업로드
             }
     }
 
