@@ -21,17 +21,15 @@ jobs:
           TOKEN=$(echo "$R" | jq -r '.idToken // empty'); UID_=$(echo "$R" | jq -r '.localId // empty')
           [ -n "$TOKEN" ] || { echo "FAIL auth: $R"; exit 1; }
           echo "OK uid=$UID_"
-          DOC="https://firestore.googleapis.com/v1/projects/$PID/databases/(default)/documents/daily_rankings/ci-test/users/$UID_"
-          echo "== 2. valid write / 정상 쓰기"
-          W=$(curl -s -X PATCH "$DOC" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-            -d '{"fields":{"nickname":{"stringValue":"ci"},"rate":{"doubleValue":5.5},"accMs":{"integerValue":"1000"},"since":{"integerValue":"0"}}}')
+          DOC="https://firestore.googleapis.com/v1/projects/$PID/databases/(default)/documents/users_v2/$UID_"
+          body() { echo '{"fields":{"nickname":{"stringValue":"ci"},"group":{"stringValue":"CITEST"},"monthly":{"doubleValue":'"$1"'},"hourly":{"doubleValue":20000},"startMin":{"integerValue":"540"},"endMin":{"integerValue":"1080"},"lunchStartMin":{"integerValue":"720"},"lunchMin":{"integerValue":"60"},"otDate":{"stringValue":"ci"},"otAccMs":{"integerValue":"0"},"otAccPay":{"doubleValue":0},"otSince":{"integerValue":"0"},"weekKey":{"stringValue":"ci"},"otWeekBase":{"doubleValue":0},"monthKey":{"stringValue":"ci"},"otMonthBase":{"doubleValue":0},"lastDay":{"stringValue":"2000-01-01"}}}'; }
+          echo "== 2. valid write users_v2 / 정상 쓰기"
+          W=$(curl -s -X PATCH "$DOC" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$(body 4200000)")
           echo "$W" | jq -e '.name' >/dev/null || { echo "FAIL write: $W"; exit 1; }
           echo "OK"
           echo "== 3. cheat write must be rejected / 조작값 거부 확인"
-          C=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH "$DOC" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-            -d '{"fields":{"nickname":{"stringValue":"ci"},"rate":{"doubleValue":9999},"accMs":{"integerValue":"1000"},"since":{"integerValue":"0"}}}')
+          C=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH "$DOC" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$(body 999999999)")
           [ "$C" = "403" ] && echo "OK rejected" || { echo "FAIL rules not applied (http $C)"; exit 1; }
           echo "== 4. public read / 공개 읽기"
           G=$(curl -s "$DOC"); echo "$G" | jq -e '.fields.nickname' >/dev/null && echo "OK" || { echo "FAIL read: $G"; exit 1; }
-          echo "== cleanup / 정리"
-          curl -s -X DELETE "$DOC" -H "Authorization: Bearer $TOKEN" >/dev/null; echo done
+          echo "(test doc has lastDay 2000-01-01, so the app hides it / 테스트 문서는 앱에서 숨겨짐)"
