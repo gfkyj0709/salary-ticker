@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "808982891089",
+    "project_id": "salary-ticker-b2e1e",
+    "storage_bucket": "salary-ticker-b2e1e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:808982891089:android:5b49985f2f216a15f30670",
+        "android_client_info": {
+          "package_name": "com.yj.salaryticker"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDpEdEliUl_yyTiZhyN8oquhHAoAn49K70"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

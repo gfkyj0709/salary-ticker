@@ -59,7 +59,7 @@ fun SettingsScreen(current: SalarySettings, onSave: (SalarySettings) -> Unit, mo
         verticalArrangement = Arrangement.spacedBy(12.dp), // Field gap / 필드 간격
     ) {
         Text("급여 설정", style = MaterialTheme.typography.headlineSmall) // Title / 제목
-        OutlinedTextField(nickname, { nickname = it }, Modifier.fillMaxWidth(), label = { Text("닉네임 (랭킹 표시)") }, singleLine = true)
+        OutlinedTextField(nickname, { nickname = it }, Modifier.fillMaxWidth(), label = { Text("닉네임 (랭킹에 공개돼요, 실명 비추)") }, singleLine = true)
 
         // Annual / monthly toggle / 연봉·월급 선택
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

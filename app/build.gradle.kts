@@ -3,6 +3,7 @@ plugins {
     id("com.android.application")             // Android app / 안드로이드 앱
     id("org.jetbrains.kotlin.android")        // Kotlin / 코틀린
     id("org.jetbrains.kotlin.plugin.compose") // Compose compiler / 컴포즈 컴파일러
+    id("com.google.gms.google-services")      // Reads google-services.json / 파이어베이스 설정 읽기
 }
 
 android {
@@ -13,8 +14,8 @@ android {
         applicationId = "com.yj.salaryticker" // Play Store ID / 플레이스토어 앱 ID
         minSdk = 26                           // Android 8.0+ / 안드로이드 8.0 이상
         targetSdk = 34                        // Target API / 타겟 API
-        versionCode = 2                       // Internal version / 내부 버전
-        versionName = "0.2.0"                 // Display version / 표시 버전
+        versionCode = 3                       // Internal version / 내부 버전
+        versionName = "0.3.0"                 // Display version / 표시 버전
     }
 
     buildTypes {
@@ -51,4 +52,9 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")          // Basic icons / 기본 아이콘
     implementation("androidx.compose.ui:ui-tooling-preview")                 // Preview / 프리뷰
     debugImplementation("androidx.compose.ui:ui-tooling")                    // Preview tooling (debug) / 디버그용 툴링
+
+    implementation(platform("com.google.firebase:firebase-bom:33.4.0"))      // Firebase version set / 파이어베이스 버전 묶음
+    implementation("com.google.firebase:firebase-firestore")                 // Ranking DB / 랭킹 DB
+    implementation("com.google.firebase:firebase-auth")                      // Anonymous login / 익명 로그인
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1") // Task.await() / 코루틴 연동
 }

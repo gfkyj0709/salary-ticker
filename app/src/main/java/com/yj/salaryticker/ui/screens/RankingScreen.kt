@@ -33,7 +33,7 @@ import com.yj.salaryticker.ui.theme.Lavender
 fun RankingScreen(state: UiState, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxSize().padding(16.dp)) {
         Text("오늘의 월급 레이스", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) // Title / 제목
-        Text("샘플 경쟁자 (Firebase 연결 전)", style = MaterialTheme.typography.bodySmall, color = Color.Gray)   // Notice / 안내
+        Text("오늘 시작 버튼 누른 사람 전체 · 🟢 근무 중", style = MaterialTheme.typography.bodySmall, color = Color.Gray)   // Notice / 안내
         LazyColumn(Modifier.padding(top = 12.dp)) {
             itemsIndexed(state.ranking, key = { _, e -> e.userId }) { i, e ->  // Stable keys / 안정적인 키
                 Row(
@@ -47,7 +47,7 @@ fun RankingScreen(state: UiState, modifier: Modifier = Modifier) {
                     val medal = when (i) { 0 -> "🥇"; 1 -> "🥈"; 2 -> "🥉"; else -> "${i + 1}" } // Medal / 메달
                     Text(medal, Modifier.width(40.dp))                                         // Rank / 순위
                     Text(
-                        e.nickname + if (e.isMe) " (나)" else "",                              // Name / 이름
+                        (if (e.isRunning) "🟢 " else "") + e.nickname + if (e.isMe) " (나)" else "", // Name + status / 이름 + 상태
                         Modifier.weight(1f),                                                   // Fill space / 남은 폭
                         fontWeight = if (e.isMe) FontWeight.Bold else FontWeight.Normal,
                     )

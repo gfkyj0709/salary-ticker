@@ -3,7 +3,7 @@ package com.yj.salaryticker.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.yj.salaryticker.data.FakeLeaderboardRepository
+import com.yj.salaryticker.data.FirestoreLeaderboardRepository
 import com.yj.salaryticker.data.LeaderboardRepository
 import com.yj.salaryticker.data.RankEntry
 import com.yj.salaryticker.data.SalaryPrefs
@@ -13,7 +13,10 @@ import com.yj.salaryticker.domain.SalaryCalculator
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
@@ -51,8 +54,7 @@ data class UiState(
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val prefs = SalaryPrefs(app)                                       // Local storage / 로컬 저장소
-    private val leaderboard: LeaderboardRepository = FakeLeaderboardRepository() // Swap to Firestore later / 나중에 Firestore로 교체
-    private var lastSubmitMs = 0L                                              // Last upload time / 마지막 업로드 시각
+    private val leaderboard: LeaderboardRepository = FirestoreLeaderboardRepository() // Real ranking server / 실제 랭킹 서버
 
     // Emits current time every TICK_MS / TICK_MS마다 현재 시각 방출
     private val ticker = flow {
@@ -76,7 +78,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     ) { settings, session, now, ranking ->
         val rate = SalaryCalculator.ratePerSecond(settings)       // Won/sec / 초당 급여
         val earned = SalaryCalculator.earned(session, rate, now)  // Earned / 누적액
-        maybeSubmit(settings.nickname, earned, now)               // Throttled upload / 주기적 업로드
         UiState(
             settings = settings,
             session = session,
@@ -84,12 +85,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             earnedToday = earned,
             elapsedMs = SalaryCalculator.elapsedMs(session, now),
             dailyTarget = SalaryCalculator.dailyTarget(settings),
-            ranking = overlayMe(ranking, settings.nickname, earned), // Live "me" row / 내 줄 실시간 반영
+            ranking = buildRanking(ranking, settings.nickname, rate, session, now), // Live amounts / 실시간 금액
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UiState()) // Keep 5s after rotate / 회전 시 5초 유지
 
     init {
         viewModelScope.launch { resetIfNewDay() } // Daily reset on launch / 앱 시작 시 날짜 체크
+        syncMyStateToServer()                     // Upload on change only / 변경 시에만 업로드
+    }
+
+    /**
+     * Upload my state only when it actually changes (start/stop/reset/settings).
+     * 상태가 바뀔 때만 업로드 → 1인당 하루 쓰기 몇 번 수준 (무료 한도 절약).
+     */
+    @OptIn(FlowPreview::class)
+    private fun syncMyStateToServer() = viewModelScope.launch {
+        combine(prefs.settingsFlow, prefs.sessionFlow) { st, se ->
+            Triple(st.nickname, SalaryCalculator.ratePerSecond(st), se)       // Upload payload / 업로드 내용
+        }
+            .distinctUntilChanged()                                           // Skip duplicates / 같은 값 무시
+            .debounce(1_500L)                                                 // Merge rapid taps / 연타 합치기
+            .collect { (nick, rate, se) ->
+                leaderboard.submitMyState(nick, rate, se.accMs, se.runningSinceMs) // Upload / 업로드
+            }
     }
 
     /**
@@ -146,32 +164,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Upload my score at most every SUBMIT_INTERVAL_MS (saves server cost).
-     * 서버 비용 절감을 위해 일정 간격으로만 업로드.
+     * Compute everyone's live amount, replace my row with local (freshest) state, sort.
+     * 모든 참가자 금액을 매초 계산, 내 줄은 로컬 최신값으로 교체 후 정렬.
      *
-     * @param nickname 닉네임
-     * @param amount 누적액
-     * @param now 현재 시각
-     */
-    private fun maybeSubmit(nickname: String, amount: Double, now: Long) {
-        if (now - lastSubmitMs < SUBMIT_INTERVAL_MS) return             // Too soon / 아직 이름
-        lastSubmitMs = now                                              // Mark time / 시각 기록
-        viewModelScope.launch { leaderboard.submitMyScore(nickname, amount) } // Upload / 업로드
-    }
-
-    /**
-     * Replace my (possibly stale) server row with the live value and re-sort.
-     * 서버의 내 점수(지연값)를 실시간 값으로 덮어쓰고 재정렬.
-     *
-     * @param ranking 서버 랭킹
+     * @param server 서버에서 받은 참가자 목록
      * @param nickname 내 닉네임
-     * @param earned 내 실시간 누적액
-     * @return 보정된 랭킹
+     * @param rate 내 초당 급여
+     * @param session 내 세션
+     * @param now 현재 시각
+     * @return 금액 내림차순 랭킹
      */
-    private fun overlayMe(ranking: List<RankEntry>, nickname: String, earned: Double): List<RankEntry> {
-        val others = ranking.filterNot { it.isMe }                                    // Remove stale me / 지연된 내 줄 제거
-        val me = RankEntry(FakeLeaderboardRepository.ME_ID, nickname, earned, isMe = true) // Live me / 실시간 내 줄
-        return (others + me).sortedByDescending { it.amount }                         // Re-sort / 재정렬
+    private fun buildRanking(
+        server: List<RankEntry>, nickname: String, rate: Double, session: SessionState, now: Long,
+    ): List<RankEntry> {
+        val myId = leaderboard.myUserId() ?: "me"                                     // My ID / 내 ID
+        val others = server.filterNot { it.isMe || it.userId == myId }                 // Drop server copy of me / 서버의 내 줄 제거
+            .map { it.copy(amount = it.amountAt(now)) }                                // Live amount / 실시간 금액
+            .filter { it.amount > 0.0 }                                                // Hide zero rows / 0원 숨김
+        val me = RankEntry(myId, nickname, rate, session.accumulatedMs, session.runningSinceMs, isMe = true)
+            .let { it.copy(amount = it.amountAt(now)) }                                // My live row / 내 실시간 줄
+        return (others + me).sortedByDescending { it.amount }                          // Sort desc / 내림차순
     }
 
     /** @return 오늘 날짜 문자열(yyyy-MM-dd) */
@@ -179,6 +191,5 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val TICK_MS = 1_000L              // Screen refresh period (lower = smoother) / 화면 갱신 주기
-        const val SUBMIT_INTERVAL_MS = 10_000L  // Ranking upload period / 랭킹 업로드 주기
     }
 }
