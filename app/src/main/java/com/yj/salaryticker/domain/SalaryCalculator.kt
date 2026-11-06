@@ -138,6 +138,35 @@ object SalaryCalculator {
     }
 
     /**
+     * Paid regular time inside a slacking segment (lunch / after-hours excluded automatically).
+     * 루팡 구간 중 실제 '돈 받는 근무시간'만 계산 (점심·퇴근 후는 자동 제외).
+     *
+     * @param s 급여 설정
+     * @param startMs 루팡 시작
+     * @param endMs 루팡 끝
+     * @return 유급 근무 ms
+     */
+    fun paidMsBetween(s: SalarySettings, startMs: Long, endMs: Long): Long {
+        if (endMs <= startMs) return 0L                                                  // Empty / 빈 구간
+        val d = Instant.ofEpochMilli(startMs).atZone(zone).toLocalDate()                 // Day of start / 시작한 날
+        return regularWorkedMs(s, d, endMs) - regularWorkedMs(s, d, startMs)              // Worked(end) − worked(start) / 차이
+    }
+
+    /**
+     * Won "earned while slacking" for a segment.
+     * 루팡 구간에 회사 돈으로 번 금액.
+     *
+     * @param s 급여 설정
+     * @param startMs 루팡 시작
+     * @param endMs 루팡 끝
+     * @return 금액(원)
+     */
+    fun slackPay(s: SalarySettings, startMs: Long, endMs: Long): Double {
+        val d = Instant.ofEpochMilli(startMs).atZone(zone).toLocalDate()                 // Day / 날짜
+        return paidMsBetween(s, startMs, endMs) / 1000.0 * ratePerSecond(s, d)            // ms × rate / 시간 × 초당급여
+    }
+
+    /**
      * Night (22:00–06:00) overlap inside [startMs, endMs).
      * 구간 안의 야간(22~06시) 시간.
      *

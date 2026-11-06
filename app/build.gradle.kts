@@ -14,8 +14,8 @@ android {
         applicationId = "com.yj.salaryticker" // Play Store ID / 플레이스토어 앱 ID
         minSdk = 26                           // Android 8.0+ / 안드로이드 8.0 이상
         targetSdk = 34                        // Target API / 타겟 API
-        versionCode = 4                       // Internal version / 내부 버전
-        versionName = "0.4.0"                 // Display version / 표시 버전
+        versionCode = 5                       // Internal version / 내부 버전
+        versionName = "0.5.0"                 // Display version / 표시 버전
     }
 
     buildTypes {

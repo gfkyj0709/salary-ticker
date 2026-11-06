@@ -60,6 +60,14 @@ class SalaryCalculatorTest {
         assertEquals(50_000.0, SalaryCalculator.overtimePay(at(2026, 11, 7, 5), at(2026, 11, 7, 8), 10_000.0), 1e-6)   // 1h×2.0 + 2h×1.5
     }
 
+    /** 루팡: 점심·퇴근 후는 자동 제외. */
+    @Test fun slacking() {
+        assertEquals(3_600_000L, SalaryCalculator.paidMsBetween(s, at(2026, 11, 6, 11, 30), at(2026, 11, 6, 13, 30))) // 30m + 30m (lunch skipped)
+        assertEquals(1_800_000L, SalaryCalculator.paidMsBetween(s, at(2026, 11, 6, 17, 30), at(2026, 11, 6, 19)))     // stops at 18:00
+        val r = SalaryCalculator.ratePerSecond(s, LocalDate.of(2026, 11, 6))                                          // Rate / 초당
+        assertEquals(3600 * r, SalaryCalculator.slackPay(s, at(2026, 11, 6, 11, 30), at(2026, 11, 6, 13, 30)), 1e-6)  // 1h pay
+    }
+
     /** 통상시급 = 월급 ÷ 209. */
     @Test fun hourly() = assertEquals(4_200_000.0 / 209, SalaryCalculator.ordinaryHourly(s), 1e-9)
 

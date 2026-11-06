@@ -44,13 +44,14 @@ fun RankingScreen(state: UiState, onSelect: ((RankSelection) -> RankSelection) -
     val sel = state.selection                                                                  // Current filter / 현재 조건
     Column(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
-            if (sel.kind == RankKind.PAY) "월급 레이스" else "공짜 야근 손해 랭킹",              // Title / 제목
+            when (sel.kind) { RankKind.PAY -> "월급 레이스"; RankKind.LUPIN -> "월급루팡 랭킹"; else -> "공짜 야근 손해 랭킹" }, // Title / 제목
             style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold,
         )
         // Kind / 종류
         ChipRow {
             Chip("💰 월급", sel.kind == RankKind.PAY) { onSelect { it.copy(kind = RankKind.PAY) } }
-            Chip("😵 야근 손해", sel.kind == RankKind.OVERTIME_LOSS) { onSelect { it.copy(kind = RankKind.OVERTIME_LOSS) } }
+            Chip("🚽 루팡", sel.kind == RankKind.LUPIN) { onSelect { it.copy(kind = RankKind.LUPIN) } }
+            Chip("😵 야근", sel.kind == RankKind.OVERTIME_LOSS) { onSelect { it.copy(kind = RankKind.OVERTIME_LOSS) } }
         }
         // Period / 기간
         ChipRow {
@@ -69,7 +70,7 @@ fun RankingScreen(state: UiState, onSelect: ((RankSelection) -> RankSelection) -
             Text("아직 그룹이 없어. 설정에서 코드를 만들거나 친구 코드를 넣어줘", color = Color.Gray)
             return@Column
         }
-        Text("🟢 지금 근무·야근 중 · 최근 7일 접속자", style = MaterialTheme.typography.bodySmall, color = Color.Gray) // Legend / 범례
+        Text("🟢 근무·야근 중 · 🚽 지금 루팡 중 · 최근 7일 접속자", style = MaterialTheme.typography.bodySmall, color = Color.Gray) // Legend / 범례
 
         LazyColumn {
             itemsIndexed(state.ranking, key = { _, r -> r.id }) { i, r ->                    // Stable keys / 안정 키
@@ -82,12 +83,12 @@ fun RankingScreen(state: UiState, onSelect: ((RankSelection) -> RankSelection) -
                     val medal = when (i) { 0 -> "🥇"; 1 -> "🥈"; 2 -> "🥉"; else -> "${i + 1}" } // Medal / 메달
                     Text(medal, Modifier.width(40.dp))                                         // Rank / 순위
                     Text(
-                        (if (r.active) "🟢 " else "") + r.nickname + if (r.isMe) " (나)" else "", // Name / 이름
+                        (if (r.slacking) "🚽 " else if (r.active) "🟢 " else "") + r.nickname + if (r.isMe) " (나)" else "", // Name / 이름
                         Modifier.weight(1f), fontWeight = if (r.isMe) FontWeight.Bold else FontWeight.Normal,
                     )
                     Text(
                         "₩ " + Format.won(r.amount), fontWeight = FontWeight.SemiBold,            // Amount / 금액
-                        color = if (sel.kind == RankKind.OVERTIME_LOSS) MaterialTheme.colorScheme.error else Color.Unspecified,
+                        color = when (sel.kind) { RankKind.OVERTIME_LOSS -> MaterialTheme.colorScheme.error; RankKind.LUPIN -> Color(0xFFB7791F); else -> Color.Unspecified },
                     )
                 }
             }

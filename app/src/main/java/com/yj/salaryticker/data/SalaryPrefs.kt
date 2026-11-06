@@ -64,6 +64,12 @@ data class OvertimeState(
 }
 
 /**
+ * Slacking timer record — same shape as overtime (date, closed time/pay, running since).
+ * 루팡 기록. 야근 기록과 구조가 같아서 같은 클래스를 재사용 (Java로 치면 같은 DTO 재사용).
+ */
+typealias LupinState = OvertimeState
+
+/**
  * Finished day's overtime (for week/month totals).
  * 지난 날 야근 결과 (주간·월간 합계용).
  *
@@ -96,6 +102,11 @@ class SalaryPrefs(private val context: Context) {
         val OT_ACC_PAY = doublePreferencesKey("ot_acc_pay")       // OT pay / 야근 수당
         val OT_SINCE = longPreferencesKey("ot_since")             // OT running since / 야근 시작
         val OT_HISTORY = stringPreferencesKey("ot_history")       // JSON {date:{ms,pay}} / 지난 야근 기록
+        val LP_DATE = stringPreferencesKey("lp_date")             // Lupin date / 루팡 날짜
+        val LP_ACC_MS = longPreferencesKey("lp_acc_ms")           // Lupin time / 루팡 시간
+        val LP_ACC_PAY = doublePreferencesKey("lp_acc_pay")       // Lupin pay / 루팡 금액
+        val LP_SINCE = longPreferencesKey("lp_since")             // Lupin running since / 루팡 시작
+        val LP_HISTORY = stringPreferencesKey("lp_history")       // JSON {date:{ms,pay}} / 지난 루팡 기록
     }
 
     /** @return 설정 Flow */
@@ -123,6 +134,30 @@ class SalaryPrefs(private val context: Context) {
     /** @return 지난 야근 기록 Flow (날짜 → 결과) */
     val historyFlow: Flow<Map<String, DayOvertime>> = context.dataStore.data.map { p ->
         parseHistory(p[OT_HISTORY])                                   // JSON → map / JSON 변환
+    }
+
+    /** @return 오늘 루팡 상태 Flow */
+    val lupinFlow: Flow<LupinState> = context.dataStore.data.map { p ->
+        LupinState(p[LP_DATE] ?: "", p[LP_ACC_MS] ?: 0L, p[LP_ACC_PAY] ?: 0.0, p[LP_SINCE] ?: 0L) // Read all / 전체 읽기
+    }
+
+    /** @return 지난 루팡 기록 Flow */
+    val lupinHistoryFlow: Flow<Map<String, DayOvertime>> = context.dataStore.data.map { p ->
+        parseHistory(p[LP_HISTORY])                                   // JSON → map / JSON 변환
+    }
+
+    /**
+     * Save today's slacking state and optionally the history.
+     * 오늘 루팡 상태(및 기록) 저장.
+     *
+     * @param lp 루팡 상태
+     * @param history 바뀐 기록 (null이면 그대로)
+     */
+    suspend fun saveLupin(lp: LupinState, history: Map<String, DayOvertime>? = null) {
+        context.dataStore.edit { p ->
+            p[LP_DATE] = lp.date; p[LP_ACC_MS] = lp.accMs; p[LP_ACC_PAY] = lp.accPay; p[LP_SINCE] = lp.sinceMs // State / 상태
+            if (history != null) p[LP_HISTORY] = toJson(history)                                         // History / 기록
+        }
     }
 
     /**

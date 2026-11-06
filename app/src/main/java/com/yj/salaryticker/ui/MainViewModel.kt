@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.yj.salaryticker.data.DayOvertime
 import com.yj.salaryticker.data.FirestoreLeaderboardRepository
 import com.yj.salaryticker.data.LeaderboardRepository
+import com.yj.salaryticker.data.LupinState
 import com.yj.salaryticker.data.OvertimeState
 import com.yj.salaryticker.data.RemoteUser
 import com.yj.salaryticker.data.SalaryPrefs
@@ -36,7 +37,7 @@ enum class RankScope { ALL, GROUP }       // 전체 / 그룹
 enum class RankPeriod { TODAY, WEEK, MONTH } // 오늘 / 이번 주 / 이번 달
 
 /** 랭킹 종류 / Ranking kind */
-enum class RankKind { PAY, OVERTIME_LOSS }  // 월급 레이스 / 야근 손해
+enum class RankKind { PAY, OVERTIME_LOSS, LUPIN }  // 월급 레이스 / 야근 손해 / 월급루팡
 
 /**
  * Ranking tab selection.
@@ -61,8 +62,12 @@ data class RankSelection(
  * @property amount 금액
  * @property isMe 내 항목 여부
  * @property active 지금 근무/야근 중인지
+ * @property slacking 지금 루팡 중인지
  */
-data class RankRow(val id: String, val nickname: String, val amount: Double, val isMe: Boolean, val active: Boolean)
+data class RankRow(
+    val id: String, val nickname: String, val amount: Double, val isMe: Boolean, val active: Boolean,
+    val slacking: Boolean = false,                                  // 지금 루팡 중 / Slacking now
+)
 
 /**
  * Everything the screens need.
@@ -81,8 +86,24 @@ data class UiState(
     val otTodayPay: Double = 0.0,                     // OT unpaid today / 오늘 못 받은 수당
     val otMonthPay: Double = 0.0,                     // OT unpaid this month / 이번 달 못 받은 수당
     val hourly: Double = 0.0,                         // Ordinary hourly / 통상시급
+    val lupin: LupinState = LupinState(),             // Slacking state / 루팡 상태
+    val lpTodayMs: Long = 0L,                         // Slacking time today / 오늘 루팡 시간
+    val lpTodayPay: Double = 0.0,                     // Paid while slacking today / 오늘 루팡 금액
+    val lpMonthPay: Double = 0.0,                     // This month / 이번 달 루팡 금액
     val selection: RankSelection = RankSelection(),   // Ranking filter / 랭킹 조건
     val ranking: List<RankRow> = emptyList(),         // Ranking / 랭킹
+)
+
+/**
+ * All local data in one bundle.
+ * 로컬 데이터 묶음 (설정 + 야근 + 루팡).
+ */
+data class LocalData(
+    val s: SalarySettings,                    // Settings / 설정
+    val ot: OvertimeState,                    // OT today / 오늘 야근
+    val otHist: Map<String, DayOvertime>,     // OT history / 야근 기록
+    val lp: LupinState,                       // Lupin today / 오늘 루팡
+    val lpHist: Map<String, DayOvertime>,     // Lupin history / 루팡 기록
 )
 
 /**
@@ -100,15 +121,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // Emits current time every second / 1초마다 현재 시각 방출
     private val ticker = flow { while (true) { emit(System.currentTimeMillis()); delay(TICK_MS) } }
 
-    // Local data bundle (settings + OT + history) / 로컬 데이터 묶음
-    private val local = combine(prefs.settingsFlow, prefs.overtimeFlow, prefs.historyFlow) { s, o, h -> Triple(s, o, h) }
+    // Local data bundle / 로컬 데이터 묶음
+    private val local = combine(
+        prefs.settingsFlow, prefs.overtimeFlow, prefs.historyFlow, prefs.lupinFlow, prefs.lupinHistoryFlow,
+    ) { s, o, oh, l, lh -> LocalData(s, o, oh, l, lh) }
 
     /** @return 화면 상태 StateFlow */
     val uiState: StateFlow<UiState> = combine(
         local, ticker, leaderboard.observeAll().onStart { emit(emptyList()) }, selection, // Inputs / 입력
-    ) { (s, ot, hist), now, server, sel ->
+    ) { l, now, server, sel ->
+        val s = l.s; val ot = l.ot                                                      // Shortcuts / 단축
         val today = LocalDate.now(SalaryCalculator.zone)                                // Today / 오늘
-        val me = buildMe(s, ot, hist, today)                                            // My server-shaped row / 내 서버 형태
+        val me = buildMe(l, today)                                                      // My server-shaped row / 내 서버 형태
+        val lpToday = lupinTodayPay(me, today, now)                                     // Lupin today / 오늘 루팡
         val otToday = otTodayPay(me, today, now)                                        // OT unpaid today / 오늘 손해
         UiState(
             settings = s,
@@ -123,6 +148,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             otTodayPay = otToday,
             otMonthPay = me.otMonthBase + otToday,
             hourly = me.hourly,
+            lupin = l.lp,
+            lpTodayMs = if (l.lp.date == today.toString()) l.lp.accMs + (if (l.lp.isRunning) SalaryCalculator.paidMsBetween(s, l.lp.sinceMs, now) else 0L) else 0L,
+            lpTodayPay = lpToday,
+            lpMonthPay = me.lpMonthBase + lpToday,
             selection = sel,
             ranking = buildRanking(server, me, sel, today, now),
         )
@@ -163,6 +192,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Start or stop slacking (only during paid work hours).
+     * 루팡 시작/종료. 종료 시 그 구간 중 '돈 받는 시간'만큼 금액 누적.
+     */
+    fun toggleLupin() = viewModelScope.launch {
+        rollDayIfNeeded()                                                            // Ensure today / 오늘 기준
+        val lp = prefs.lupinFlow.first()                                             // Current / 현재
+        val s = prefs.settingsFlow.first()                                           // Settings / 설정
+        val now = System.currentTimeMillis()                                         // Now / 현재 시각
+        val next = if (lp.isRunning) lp.copy(
+            accMs = lp.accMs + SalaryCalculator.paidMsBetween(s, lp.sinceMs, now),   // Paid time only / 유급시간만
+            accPay = lp.accPay + SalaryCalculator.slackPay(s, lp.sinceMs, now),      // Add pay / 금액 누적
+            sinceMs = 0L,                                                            // Stop / 정지
+        ) else if (SalaryCalculator.status(s, now) == WorkStatus.WORKING) lp.copy(sinceMs = now) // Start in work hours / 근무 중에만 시작
+        else return@launch                                                           // Not working → ignore / 근무 외 무시
+        prefs.saveLupin(next)                                                        // Persist / 저장
+    }
+
+    /**
+     * Clear today's slacking record.
+     * 오늘 루팡 기록 초기화.
+     */
+    fun resetLupinToday() = viewModelScope.launch {
+        prefs.saveLupin(LupinState(date = LocalDate.now(SalaryCalculator.zone).toString())) // Fresh / 새 기록
+    }
+
+    /**
      * Save settings.
      * 설정 저장.
      *
@@ -195,6 +250,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * @return 오늘 기준 야근 상태
      */
     private suspend fun rollDayIfNeeded(): OvertimeState {
+        rollLupinIfNeeded()                                                        // Lupin too / 루팡도 정리
         val ot = prefs.overtimeFlow.first()                                        // Current / 현재
         val today = LocalDate.now(SalaryCalculator.zone)                           // Today / 오늘
         if (ot.date == today.toString()) return ot                                 // Same day / 같은 날
@@ -215,12 +271,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * On a new day: archive yesterday's slacking (work hours never cross midnight, so just close it).
+     * 날짜가 바뀌면 어제 루팡을 기록으로 옮김 (근무시간은 자정을 안 넘으니 그냥 마감).
+     */
+    private suspend fun rollLupinIfNeeded() {
+        val lp = prefs.lupinFlow.first()                                           // Current / 현재
+        val today = LocalDate.now(SalaryCalculator.zone).toString()                // Today / 오늘
+        if (lp.date == today) return                                               // Same day / 같은 날
+        val history = prefs.lupinHistoryFlow.first().toMutableMap()                // History / 기록
+        if (lp.date.isNotEmpty()) {
+            val s = prefs.settingsFlow.first()                                     // Settings / 설정
+            val now = System.currentTimeMillis()                                   // Now / 현재
+            val ms = lp.accMs + if (lp.isRunning) SalaryCalculator.paidMsBetween(s, lp.sinceMs, now) else 0L // Close / 마감
+            val pay = lp.accPay + if (lp.isRunning) SalaryCalculator.slackPay(s, lp.sinceMs, now) else 0.0
+            if (ms > 0) history[lp.date] = DayOvertime(ms, pay)                    // Archive / 보관
+        }
+        prefs.saveLupin(LupinState(date = today), history)                         // New day / 새 날
+    }
+
+    /**
      * Build my server row from local data (also used for my ranking line).
      * 로컬 데이터로 내 서버용 데이터 생성 (내 랭킹 줄에도 사용).
      *
      * @return 내 정보
      */
-    private fun buildMe(s: SalarySettings, ot: OvertimeState, hist: Map<String, DayOvertime>, today: LocalDate): RemoteUser {
+    private fun buildMe(l: LocalData, today: LocalDate): RemoteUser {
+        val s = l.s; val ot = l.ot; val hist = l.otHist                                   // Shortcuts / 단축
         val t = today.toString()                                                          // Today key / 오늘 키
         val ws = WorkCalendar.weekStart(today).toString()                                 // Monday / 월요일
         val mk = WorkCalendar.monthKey(today)                                             // Month key / 월 키
@@ -236,7 +312,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             monthKey = mk,
             otMonthBase = hist.filterKeys { it.startsWith(mk) && it < t }.values.sumOf { it.pay }, // Past days this month / 이번 달 지난 날
             lastDay = t,
+            lpDate = l.lp.date, lpAccMs = l.lp.accMs, lpAccPay = l.lp.accPay, lpSince = l.lp.sinceMs,
+            lpWeekBase = l.lpHist.filterKeys { it >= ws && it < t }.values.sumOf { it.pay },     // Lupin week / 루팡 주간
+            lpMonthBase = l.lpHist.filterKeys { it.startsWith(mk) && it < t }.values.sumOf { it.pay }, // Lupin month / 루팡 월간
         )
+    }
+
+    /**
+     * Live slacking pay today, capped by today's regular pay (anti-cheat).
+     * 오늘 루팡 금액 (실시간). 오늘 정규 수입을 넘을 수 없게 제한 (조작 방지).
+     *
+     * @return 금액
+     */
+    private fun lupinTodayPay(u: RemoteUser, today: LocalDate, now: Long): Double {
+        if (u.lpDate != today.toString()) return 0.0                                         // Stale / 오늘 기록 아님
+        val s = u.toSettings()                                                               // Settings / 설정
+        val live = if (u.lpSince > 0) SalaryCalculator.slackPay(s, u.lpSince, now) else 0.0  // Running part / 진행분
+        return (u.lpAccPay + live).coerceAtMost(SalaryCalculator.regularEarnedOn(s, today, now)) // Cap / 상한
     }
 
     /**
@@ -265,6 +357,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 RankPeriod.WEEK -> SalaryCalculator.regularEarnedSince(s, WorkCalendar.weekStart(today), now) // Week / 주
                 RankPeriod.MONTH -> SalaryCalculator.regularEarnedSince(s, today.withDayOfMonth(1), now)      // Month / 월
             }
+            RankKind.LUPIN -> {
+                val t = lupinTodayPay(u, today, now)                                          // Today lupin / 오늘 루팡
+                val total = when (sel.period) {
+                    RankPeriod.TODAY -> t
+                    RankPeriod.WEEK -> t + if (u.weekKey == WorkCalendar.weekKey(today)) u.lpWeekBase else 0.0   // + week / 주간
+                    RankPeriod.MONTH -> t + if (u.monthKey == WorkCalendar.monthKey(today)) u.lpMonthBase else 0.0 // + month / 월간
+                }
+                total.coerceAtMost(amountOf(u, sel.copy(kind = RankKind.PAY), today, now))     // ≤ regular pay / 정규 수입 이하
+            }
             RankKind.OVERTIME_LOSS -> {
                 val t = otTodayPay(u, today, now)                                             // Today OT / 오늘 야근
                 when (sel.period) {
@@ -291,8 +392,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return pool.map { u ->
             val st = SalaryCalculator.status(u.toSettings(), now)                             // Status / 상태
             val otOn = u.otSince > 0 && u.otDate == today.toString()                          // OT running / 야근 중
-            RankRow(u.uid, u.nickname, amountOf(u, sel, today, now), u === me, st == WorkStatus.WORKING || otOn)
-        }.filter { sel.kind == RankKind.PAY || it.amount > 0.0 || it.isMe }                   // Hide zero OT / 야근 0원 숨김
+            val lpOn = u.lpSince > 0 && u.lpDate == today.toString() && st == WorkStatus.WORKING // Slacking now / 루팡 중
+            RankRow(u.uid, u.nickname, amountOf(u, sel, today, now), u === me, st == WorkStatus.WORKING || otOn, lpOn)
+        }.filter { sel.kind == RankKind.PAY || it.amount > 0.0 || it.isMe }                   // Hide zero OT/lupin / 0원 숨김
             .sortedByDescending { it.amount }                                                 // Sort desc / 내림차순
     }
 
@@ -304,11 +406,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun syncToServer() = viewModelScope.launch {
         local.distinctUntilChanged()                                                          // Local data, skip duplicates / 로컬 데이터, 중복 무시
             .debounce(1_500L)                                                                 // Merge rapid taps / 연타 합치기
-            .collect { (s, ot, hist) ->
-                if (s.payAmount <= 0L) return@collect                                         // Not configured / 미설정
+            .collect { l ->
+                if (l.s.payAmount <= 0L) return@collect                                       // Not configured / 미설정
                 val today = LocalDate.now(SalaryCalculator.zone)                              // Today / 오늘
-                if (ot.date != today.toString()) return@collect                               // Wait for day roll / 날짜 정리 대기
-                leaderboard.submit(buildMe(s, ot, hist, today))                               // Upload / 업로드
+                if (l.ot.date != today.toString()) return@collect                             // Wait for day roll / 날짜 정리 대기
+                leaderboard.submit(buildMe(l, today))                                         // Upload / 업로드
             }
     }
 

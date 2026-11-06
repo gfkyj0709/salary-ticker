@@ -32,6 +32,12 @@ import kotlinx.coroutines.tasks.await
  * @property monthKey 월간 기준 키
  * @property otMonthBase 이번 달 지난 날 야근 수당 합
  * @property lastDay 마지막 접속일 (오래된 사용자 숨김용)
+ * @property lpDate 오늘 루팡 기록 날짜
+ * @property lpAccMs 오늘 종료된 루팡 ms
+ * @property lpAccPay 오늘 종료된 루팡 금액
+ * @property lpSince 진행 중 루팡 시작 (0이면 정지)
+ * @property lpWeekBase 이번 주 지난 날 루팡 합
+ * @property lpMonthBase 이번 달 지난 날 루팡 합
  */
 data class RemoteUser(
     val uid: String,
@@ -52,6 +58,12 @@ data class RemoteUser(
     val monthKey: String,
     val otMonthBase: Double,
     val lastDay: String,
+    val lpDate: String = "",
+    val lpAccMs: Long = 0L,
+    val lpAccPay: Double = 0.0,
+    val lpSince: Long = 0L,
+    val lpWeekBase: Double = 0.0,
+    val lpMonthBase: Double = 0.0,
 ) {
     /**
      * Convert to settings so the same calculator works for everyone.
@@ -76,6 +88,9 @@ data class RemoteUser(
         "weekKey" to weekKey, "otWeekBase" to otWeekBase.coerceIn(0.0, 5_000_000.0),     // Week / 주간
         "monthKey" to monthKey, "otMonthBase" to otMonthBase.coerceIn(0.0, 20_000_000.0), // Month / 월간
         "lastDay" to lastDay,                                                    // Last seen / 마지막 접속
+        "lpDate" to lpDate, "lpAccMs" to lpAccMs.coerceIn(0L, MAX_OT_MS),        // Lupin today / 오늘 루팡
+        "lpAccPay" to lpAccPay.coerceAtLeast(0.0), "lpSince" to lpSince,         // Lupin pay, since / 루팡 금액, 시작
+        "lpWeekBase" to lpWeekBase.coerceAtLeast(0.0), "lpMonthBase" to lpMonthBase.coerceAtLeast(0.0), // Lupin bases / 루팡 누적
     )
 
     companion object {
@@ -107,6 +122,12 @@ data class RemoteUser(
             monthKey = d.getString("monthKey") ?: "",
             otMonthBase = d.getDouble("otMonthBase") ?: 0.0,
             lastDay = d.getString("lastDay") ?: "",
+            lpDate = d.getString("lpDate") ?: "",
+            lpAccMs = d.getLong("lpAccMs") ?: 0L,
+            lpAccPay = d.getDouble("lpAccPay") ?: 0.0,
+            lpSince = d.getLong("lpSince") ?: 0L,
+            lpWeekBase = d.getDouble("lpWeekBase") ?: 0.0,
+            lpMonthBase = d.getDouble("lpMonthBase") ?: 0.0,
         )
     }
 }
