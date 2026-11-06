@@ -3,10 +3,11 @@ package com.yj.salaryticker.domain
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.YearMonth
+import java.time.temporal.IsoFields
 
 /**
- * Counts working days automatically (Mon–Fri minus Korean public holidays).
- * 근무일 자동 계산: 평일(월~금) − 공휴일. 사용자가 일수를 넣을 필요 없음.
+ * Working-day calendar (Mon–Fri minus Korean public holidays) and period keys.
+ * 근무일 달력(평일 − 공휴일)과 주/월 기간 키.
  */
 object WorkCalendar {
 
@@ -40,14 +41,45 @@ object WorkCalendar {
 
     /**
      * Working days in the month containing [date].
-     * 해당 월의 실제 근무일 수 (월급 ÷ 이번 달 근무일 → 달마다 초당 급여가 조금씩 달라짐).
+     * 해당 월의 실제 근무일 수.
      *
      * @param date 기준 날짜
      * @return 근무일 수 (최소 1)
      */
-    fun workDaysInMonth(date: LocalDate): Int {
+    fun workDaysInMonth(date: LocalDate): Int = cache.getOrPut(YearMonth.from(date)) { // Memoized per month / 월별 캐시
         val ym = YearMonth.from(date)                                     // Target month / 대상 월
-        return (1..ym.lengthOfMonth()).count { isWorkday(ym.atDay(it)) } // Count workdays / 근무일 세기
+        (1..ym.lengthOfMonth()).count { isWorkday(ym.atDay(it)) }        // Count workdays / 근무일 세기
             .coerceAtLeast(1)                                             // Avoid divide-by-zero / 0 나누기 방지
     }
+
+    // Month → workdays cache (ranking recomputes every second) / 월별 근무일 캐시 (랭킹이 매초 재계산하므로)
+    private val cache = java.util.concurrent.ConcurrentHashMap<YearMonth, Int>()
+
+    /**
+     * ISO week key like "2026-W45".
+     * ISO 주차 키 (월요일 시작).
+     *
+     * @param d 날짜
+     * @return 주차 키
+     */
+    fun weekKey(d: LocalDate): String =
+        "${d.get(IsoFields.WEEK_BASED_YEAR)}-W${d.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR)}" // Year-week / 연-주차
+
+    /**
+     * Month key like "2026-11".
+     * 월 키.
+     *
+     * @param d 날짜
+     * @return 월 키
+     */
+    fun monthKey(d: LocalDate): String = YearMonth.from(d).toString() // yyyy-MM / 연-월
+
+    /**
+     * Monday of the week containing [d].
+     * 해당 주의 월요일.
+     *
+     * @param d 날짜
+     * @return 월요일 날짜
+     */
+    fun weekStart(d: LocalDate): LocalDate = d.minusDays((d.dayOfWeek.value - 1).toLong()) // Back to Monday / 월요일로
 }

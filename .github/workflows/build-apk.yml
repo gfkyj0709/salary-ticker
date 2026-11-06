@@ -22,7 +22,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4      # Gradle 8.9 (no wrapper jar needed) / 래퍼 jar 없이 그래들 설치
         with:
           gradle-version: '8.9'
-      - run: gradle assembleDebug                 # Build debug APK / 디버그 APK 빌드
+      - run: gradle testDebugUnitTest assembleDebug # Test math, then build APK / 계산 테스트 후 APK 빌드
       - run: mv app/build/outputs/apk/debug/app-debug.apk SalaryTicker.apk # Rename / 이름 변경
       - uses: softprops/action-gh-release@v2      # Publish release / 릴리스 게시
         with:

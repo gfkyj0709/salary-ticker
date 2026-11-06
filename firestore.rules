@@ -1,0 +1,30 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    // v0.3 daily ranking (old app versions) / 구버전 일별 랭킹
+    match /daily_rankings/{day}/users/{uid} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.nickname is string && request.resource.data.nickname.size() <= 12
+        && request.resource.data.rate is number && request.resource.data.rate >= 0 && request.resource.data.rate <= 100
+        && request.resource.data.accMs is number && request.resource.data.accMs <= 57600000
+        && request.resource.data.since is number;
+    }
+    // v0.4 one doc per user / 사용자당 문서 1개
+    match /users_v2/{uid} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.nickname is string && request.resource.data.nickname.size() <= 12
+        && request.resource.data.group is string && request.resource.data.group.size() <= 8
+        && request.resource.data.monthly is number && request.resource.data.monthly >= 0 && request.resource.data.monthly <= 100000000
+        && request.resource.data.hourly is number && request.resource.data.hourly <= 500000
+        && request.resource.data.startMin is int && request.resource.data.endMin is int
+        && request.resource.data.startMin >= 0 && request.resource.data.endMin <= 1440
+        && request.resource.data.lunchMin is int && request.resource.data.lunchMin <= 240
+        && request.resource.data.otAccMs is number && request.resource.data.otAccMs <= 57600000
+        && request.resource.data.otAccPay is number && request.resource.data.otAccPay <= 1000000
+        && request.resource.data.otWeekBase is number && request.resource.data.otWeekBase <= 5000000
+        && request.resource.data.otMonthBase is number && request.resource.data.otMonthBase <= 20000000;
+    }
+  }
+}

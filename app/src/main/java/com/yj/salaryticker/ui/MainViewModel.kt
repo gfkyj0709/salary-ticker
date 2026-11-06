@@ -3,193 +3,317 @@ package com.yj.salaryticker.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.yj.salaryticker.data.DayOvertime
 import com.yj.salaryticker.data.FirestoreLeaderboardRepository
 import com.yj.salaryticker.data.LeaderboardRepository
-import com.yj.salaryticker.data.RankEntry
+import com.yj.salaryticker.data.OvertimeState
+import com.yj.salaryticker.data.RemoteUser
 import com.yj.salaryticker.data.SalaryPrefs
 import com.yj.salaryticker.data.SalarySettings
-import com.yj.salaryticker.data.SessionState
 import com.yj.salaryticker.domain.SalaryCalculator
+import com.yj.salaryticker.domain.WorkCalendar
+import com.yj.salaryticker.domain.WorkStatus
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 
+/** 랭킹 범위 / Ranking scope */
+enum class RankScope { ALL, GROUP }       // 전체 / 그룹
+
+/** 랭킹 기간 / Ranking period */
+enum class RankPeriod { TODAY, WEEK, MONTH } // 오늘 / 이번 주 / 이번 달
+
+/** 랭킹 종류 / Ranking kind */
+enum class RankKind { PAY, OVERTIME_LOSS }  // 월급 레이스 / 야근 손해
+
 /**
- * Everything the screens need to draw.
- * 화면이 그리는 데 필요한 상태 묶음.
+ * Ranking tab selection.
+ * 랭킹 탭에서 고른 조건.
  *
- * @property settings 급여 설정
- * @property session 세션 상태
- * @property ratePerSecond 초당 급여
- * @property earnedToday 오늘 누적액
- * @property elapsedMs 오늘 근무 밀리초
- * @property dailyTarget 하루 목표액
- * @property ranking 랭킹 목록(내 금액은 실시간 반영)
+ * @property scope 범위
+ * @property period 기간
+ * @property kind 종류
  */
-data class UiState(
-    val settings: SalarySettings = SalarySettings(), // Settings / 설정
-    val session: SessionState = SessionState(),      // Session / 세션
-    val ratePerSecond: Double = 0.0,                 // Won/sec / 초당 급여
-    val earnedToday: Double = 0.0,                   // Today's earnings / 오늘 누적
-    val elapsedMs: Long = 0L,                        // Worked millis / 근무 시간
-    val dailyTarget: Double = 0.0,                   // Day target / 하루 목표
-    val ranking: List<RankEntry> = emptyList(),      // Ranking / 랭킹
+data class RankSelection(
+    val scope: RankScope = RankScope.ALL,       // Default all / 기본 전체
+    val period: RankPeriod = RankPeriod.TODAY,  // Default today / 기본 오늘
+    val kind: RankKind = RankKind.PAY,          // Default pay / 기본 월급
 )
 
 /**
- * Main ViewModel: ticker, start/stop, ranking sync.
- * 메인 뷰모델 (Spring의 Service 계층 느낌). 1초 티커로 화면 갱신.
+ * One ranking row for display.
+ * 화면 표시용 랭킹 한 줄.
+ *
+ * @property id 사용자 ID
+ * @property nickname 닉네임
+ * @property amount 금액
+ * @property isMe 내 항목 여부
+ * @property active 지금 근무/야근 중인지
+ */
+data class RankRow(val id: String, val nickname: String, val amount: Double, val isMe: Boolean, val active: Boolean)
+
+/**
+ * Everything the screens need.
+ * 화면 상태 묶음.
+ */
+data class UiState(
+    val settings: SalarySettings = SalarySettings(),  // Settings / 설정
+    val status: WorkStatus = WorkStatus.BEFORE,       // Work status / 근무 상태
+    val ratePerSecond: Double = 0.0,                  // Won/sec / 초당 급여
+    val earnedToday: Double = 0.0,                    // Today's regular pay / 오늘 정규 수입
+    val workedMs: Long = 0L,                          // Today's regular ms / 오늘 정규 근무
+    val dailyTarget: Double = 0.0,                    // Day target / 하루치
+    val msUntilClockOut: Long = 0L,                   // Until clock-out / 퇴근까지
+    val overtime: OvertimeState = OvertimeState(),    // OT state / 야근 상태
+    val otTodayMs: Long = 0L,                         // OT time today / 오늘 야근 시간
+    val otTodayPay: Double = 0.0,                     // OT unpaid today / 오늘 못 받은 수당
+    val otMonthPay: Double = 0.0,                     // OT unpaid this month / 이번 달 못 받은 수당
+    val hourly: Double = 0.0,                         // Ordinary hourly / 통상시급
+    val selection: RankSelection = RankSelection(),   // Ranking filter / 랭킹 조건
+    val ranking: List<RankRow> = emptyList(),         // Ranking / 랭킹
+)
+
+/**
+ * Main ViewModel (Service layer role). Regular pay is schedule-based, overtime is button-based.
+ * 메인 뷰모델 (Spring Service 계층 느낌). 정규 근무는 시간표로 자동, 야근은 버튼으로 기록.
  *
  * @param app 애플리케이션
  */
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val prefs = SalaryPrefs(app)                                       // Local storage / 로컬 저장소
-    private val leaderboard: LeaderboardRepository = FirestoreLeaderboardRepository() // Real ranking server / 실제 랭킹 서버
+    private val prefs = SalaryPrefs(app)                                                // Local storage / 로컬 저장소
+    private val leaderboard: LeaderboardRepository = FirestoreLeaderboardRepository()   // Ranking server / 랭킹 서버
+    private val selection = MutableStateFlow(RankSelection())                           // Ranking filter / 랭킹 조건
 
-    // Emits current time every TICK_MS / TICK_MS마다 현재 시각 방출
-    private val ticker = flow {
-        while (true) {
-            emit(System.currentTimeMillis()) // Now / 현재 시각
-            delay(TICK_MS)                   // Wait / 대기
-        }
-    }
+    // Emits current time every second / 1초마다 현재 시각 방출
+    private val ticker = flow { while (true) { emit(System.currentTimeMillis()); delay(TICK_MS) } }
 
-    /**
-     * Screen state combined from storage, ticker, and ranking.
-     * 저장소 + 티커 + 랭킹을 합친 화면 상태.
-     *
-     * @return UiState StateFlow
-     */
+    // Local data bundle (settings + OT + history) / 로컬 데이터 묶음
+    private val local = combine(prefs.settingsFlow, prefs.overtimeFlow, prefs.historyFlow) { s, o, h -> Triple(s, o, h) }
+
+    /** @return 화면 상태 StateFlow */
     val uiState: StateFlow<UiState> = combine(
-        prefs.settingsFlow,            // Settings stream / 설정 스트림
-        prefs.sessionFlow,             // Session stream / 세션 스트림
-        ticker,                        // Clock / 시계
-        leaderboard.observeRanking(),  // Ranking stream / 랭킹 스트림
-    ) { settings, session, now, ranking ->
-        val rate = SalaryCalculator.ratePerSecond(settings)       // Won/sec / 초당 급여
-        val earned = SalaryCalculator.earned(session, rate, now)  // Earned / 누적액
+        local, ticker, leaderboard.observeAll().onStart { emit(emptyList()) }, selection, // Inputs / 입력
+    ) { (s, ot, hist), now, server, sel ->
+        val today = LocalDate.now(SalaryCalculator.zone)                                // Today / 오늘
+        val me = buildMe(s, ot, hist, today)                                            // My server-shaped row / 내 서버 형태
+        val otToday = otTodayPay(me, today, now)                                        // OT unpaid today / 오늘 손해
         UiState(
-            settings = settings,
-            session = session,
-            ratePerSecond = rate,
-            earnedToday = earned,
-            elapsedMs = SalaryCalculator.elapsedMs(session, now),
-            dailyTarget = SalaryCalculator.dailyTarget(settings),
-            ranking = buildRanking(ranking, settings.nickname, rate, session, now), // Live amounts / 실시간 금액
+            settings = s,
+            status = SalaryCalculator.status(s, now),
+            ratePerSecond = SalaryCalculator.ratePerSecond(s, today),
+            earnedToday = SalaryCalculator.regularEarnedOn(s, today, now),
+            workedMs = SalaryCalculator.regularWorkedMs(s, today, now),
+            dailyTarget = SalaryCalculator.dailyWorkMs(s) / 1000.0 * SalaryCalculator.ratePerSecond(s, today),
+            msUntilClockOut = SalaryCalculator.msUntilClockOut(s, now),
+            overtime = ot,
+            otTodayMs = if (ot.date == today.toString()) ot.accMs + (if (ot.isRunning) now - ot.sinceMs else 0L) else 0L,
+            otTodayPay = otToday,
+            otMonthPay = me.otMonthBase + otToday,
+            hourly = me.hourly,
+            selection = sel,
+            ranking = buildRanking(server, me, sel, today, now),
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UiState()) // Keep 5s after rotate / 회전 시 5초 유지
 
     init {
-        viewModelScope.launch { resetIfNewDay() } // Daily reset on launch / 앱 시작 시 날짜 체크
-        syncMyStateToServer()                     // Upload on change only / 변경 시에만 업로드
+        viewModelScope.launch { while (true) { rollDayIfNeeded(); delay(30_000L) } } // Midnight check every 30s / 30초마다 날짜 체크
+        syncToServer()                                                              // Upload on change / 변경 시 업로드
     }
 
+    // ---------- Actions / 사용자 동작 ----------
+
     /**
-     * Upload my state only when it actually changes (start/stop/reset/settings).
-     * 상태가 바뀔 때만 업로드 → 1인당 하루 쓰기 몇 번 수준 (무료 한도 절약).
+     * Start or stop overtime.
+     * 야근 시작/종료 토글. 종료 시 그 구간의 법정 수당을 누적.
      */
-    @OptIn(FlowPreview::class)
-    private fun syncMyStateToServer() = viewModelScope.launch {
-        combine(prefs.settingsFlow, prefs.sessionFlow) { st, se ->
-            Triple(st.nickname, SalaryCalculator.ratePerSecond(st), se)       // Upload payload / 업로드 내용
-        }
-            .distinctUntilChanged()                                           // Skip duplicates / 같은 값 무시
-            .debounce(1_500L)                                                 // Merge rapid taps / 연타 합치기
-            .collect { (nick, rate, se) ->
-                leaderboard.submitMyState(nick, rate, se.accumulatedMs, se.runningSinceMs) // Upload / 업로드
-            }
+    fun toggleOvertime() = viewModelScope.launch {
+        val ot = rollDayIfNeeded()                                                   // Ensure today / 오늘 기준 보장
+        val s = prefs.settingsFlow.first()                                           // Settings / 설정
+        val now = System.currentTimeMillis()                                         // Now / 현재
+        val next = if (ot.isRunning) {
+            val end = minOf(now, ot.sinceMs + RemoteUser.MAX_OT_MS)                  // Cap 16h / 16시간 제한
+            ot.copy(
+                accMs = ot.accMs + (end - ot.sinceMs),                               // Add time / 시간 누적
+                accPay = ot.accPay + SalaryCalculator.overtimePay(ot.sinceMs, end, SalaryCalculator.ordinaryHourly(s)), // Add pay / 수당 누적
+                sinceMs = 0L,                                                        // Stop / 정지
+            )
+        } else ot.copy(sinceMs = now)                                                // Start / 시작
+        prefs.saveOvertime(next)                                                     // Persist / 저장
     }
 
     /**
-     * Start counting.
-     * 카운터 시작. 시작 시각만 저장하고 금액은 매번 계산.
+     * Clear today's overtime record.
+     * 오늘 야근 기록 초기화.
      */
-    fun start() = viewModelScope.launch {
-        val s = resetIfNewDay()                                                  // Ensure today / 오늘 세션 보장
-        if (s.isRunning) return@launch                                           // Already running / 이미 실행 중
-        prefs.saveSession(s.copy(runningSinceMs = System.currentTimeMillis()))   // Save start time / 시작시각 저장
+    fun resetOvertimeToday() = viewModelScope.launch {
+        prefs.saveOvertime(OvertimeState(date = LocalDate.now(SalaryCalculator.zone).toString())) // Fresh / 새 기록
     }
 
     /**
-     * Pause counting (keeps accumulated amount).
-     * 일시정지. 지금까지 구간을 누적에 합침.
-     */
-    fun stop() = viewModelScope.launch {
-        val s = prefs.sessionFlow.first()                                        // Current session / 현재 세션
-        if (!s.isRunning) return@launch                                          // Not running / 실행 중 아님
-        val acc = SalaryCalculator.elapsedMs(s, System.currentTimeMillis())      // Fold segment / 구간 합산
-        prefs.saveSession(s.copy(accumulatedMs = acc, runningSinceMs = 0L))      // Save stopped / 정지 상태 저장
-    }
-
-    /**
-     * Reset today's counter to zero.
-     * 오늘 카운터 0으로 초기화.
-     */
-    fun reset() = viewModelScope.launch {
-        prefs.saveSession(SessionState(date = today())) // Fresh session / 새 세션
-    }
-
-    /**
-     * Save settings from the settings screen.
-     * 설정 화면 값 저장.
+     * Save settings.
+     * 설정 저장.
      *
      * @param s 새 설정
      */
-    fun saveSettings(s: SalarySettings) = viewModelScope.launch {
-        prefs.saveSettings(s) // Persist / 저장
+    fun saveSettings(s: SalarySettings) = viewModelScope.launch { prefs.saveSettings(s) } // Persist / 저장
+
+    /**
+     * Change ranking filter.
+     * 랭킹 조건 변경.
+     *
+     * @param f 변경 함수
+     */
+    fun select(f: (RankSelection) -> RankSelection) = selection.update(f) // Update / 갱신
+
+    /**
+     * New random group code (no confusing chars like 0/O, 1/I).
+     * 새 그룹 코드 생성 (헷갈리는 0/O, 1/I 제외).
+     *
+     * @return 6자리 코드
+     */
+    fun newGroupCode(): String = (1..6).map { CODE_CHARS.random() }.joinToString("") // Random 6 / 랜덤 6자리
+
+    // ---------- Internals / 내부 로직 ----------
+
+    /**
+     * On a new day: move yesterday's OT into history; OT running past midnight continues today.
+     * 날짜가 바뀌면 어제 야근을 기록으로 옮김. 자정을 넘긴 야근은 오늘로 이어짐.
+     *
+     * @return 오늘 기준 야근 상태
+     */
+    private suspend fun rollDayIfNeeded(): OvertimeState {
+        val ot = prefs.overtimeFlow.first()                                        // Current / 현재
+        val today = LocalDate.now(SalaryCalculator.zone)                           // Today / 오늘
+        if (ot.date == today.toString()) return ot                                 // Same day / 같은 날
+        if (ot.date.isEmpty()) {                                                   // First run / 최초 실행
+            return OvertimeState(date = today.toString()).also { prefs.saveOvertime(it) }
+        }
+        val s = prefs.settingsFlow.first()                                         // Settings / 설정
+        val midnight = today.atStartOfDay(SalaryCalculator.zone).toInstant().toEpochMilli() // Today 00:00 / 오늘 0시
+        val segEnd = if (ot.isRunning) minOf(midnight, ot.sinceMs + RemoteUser.MAX_OT_MS) else 0L // Close at midnight / 자정에 마감
+        val oldMs = ot.accMs + if (ot.isRunning) (segEnd - ot.sinceMs).coerceAtLeast(0L) else 0L   // Old day time / 어제 시간
+        val oldPay = ot.accPay + if (ot.isRunning) SalaryCalculator.overtimePay(ot.sinceMs, segEnd, SalaryCalculator.ordinaryHourly(s)) else 0.0 // Old day pay / 어제 수당
+        val history = prefs.historyFlow.first().toMutableMap()                     // History / 기록
+        if (oldMs > 0) history[ot.date] = DayOvertime(oldMs, oldPay)               // Archive / 보관
+        val carry = ot.isRunning && ot.date == today.minusDays(1).toString() && ot.sinceMs + RemoteUser.MAX_OT_MS > midnight // Continue? / 이어갈지
+        val fresh = OvertimeState(date = today.toString(), sinceMs = if (carry) midnight else 0L) // New day / 새 날
+        prefs.saveOvertime(fresh, history)                                         // Persist / 저장
+        return fresh
     }
 
     /**
-     * Reset session if date changed (ranking is "today" based).
-     * 날짜가 바뀌었으면 세션 초기화 (랭킹이 '오늘 누적' 기준이라).
+     * Build my server row from local data (also used for my ranking line).
+     * 로컬 데이터로 내 서버용 데이터 생성 (내 랭킹 줄에도 사용).
      *
-     * @return 오늘 기준 세션
+     * @return 내 정보
      */
-    private suspend fun resetIfNewDay(): SessionState {
-        val s = prefs.sessionFlow.first()               // Read current / 현재 값
-        if (s.date == today()) return s                 // Same day / 같은 날이면 그대로
-        val fresh = SessionState(date = today())        // New day / 새 날짜
-        prefs.saveSession(fresh)                        // Persist / 저장
-        return fresh                                    // Return fresh / 새 세션 반환
+    private fun buildMe(s: SalarySettings, ot: OvertimeState, hist: Map<String, DayOvertime>, today: LocalDate): RemoteUser {
+        val t = today.toString()                                                          // Today key / 오늘 키
+        val ws = WorkCalendar.weekStart(today).toString()                                 // Monday / 월요일
+        val mk = WorkCalendar.monthKey(today)                                             // Month key / 월 키
+        return RemoteUser(
+            uid = leaderboard.myUserId() ?: "me",
+            nickname = s.nickname, group = s.group,
+            monthly = SalaryCalculator.monthlyPay(s),
+            startMin = s.startMin, endMin = s.endMin, lunchStartMin = s.lunchStartMin, lunchMin = s.lunchMin,
+            hourly = SalaryCalculator.ordinaryHourly(s),
+            otDate = ot.date, otAccMs = ot.accMs, otAccPay = ot.accPay, otSince = ot.sinceMs,
+            weekKey = WorkCalendar.weekKey(today),
+            otWeekBase = hist.filterKeys { it >= ws && it < t }.values.sumOf { it.pay },      // Past days this week / 이번 주 지난 날
+            monthKey = mk,
+            otMonthBase = hist.filterKeys { it.startsWith(mk) && it < t }.values.sumOf { it.pay }, // Past days this month / 이번 달 지난 날
+            lastDay = t,
+        )
     }
 
     /**
-     * Compute everyone's live amount, replace my row with local (freshest) state, sort.
-     * 모든 참가자 금액을 매초 계산, 내 줄은 로컬 최신값으로 교체 후 정렬.
+     * Live unpaid OT today for any user.
+     * 오늘 야근 손해 (실시간).
      *
-     * @param server 서버에서 받은 참가자 목록
-     * @param nickname 내 닉네임
-     * @param rate 내 초당 급여
-     * @param session 내 세션
-     * @param now 현재 시각
-     * @return 금액 내림차순 랭킹
+     * @return 금액
      */
-    private fun buildRanking(
-        server: List<RankEntry>, nickname: String, rate: Double, session: SessionState, now: Long,
-    ): List<RankEntry> {
-        val myId = leaderboard.myUserId() ?: "me"                                     // My ID / 내 ID
-        val others = server.filterNot { it.isMe || it.userId == myId }                 // Drop server copy of me / 서버의 내 줄 제거
-            .map { it.copy(amount = it.amountAt(now)) }                                // Live amount / 실시간 금액
-            .filter { it.amount > 0.0 }                                                // Hide zero rows / 0원 숨김
-        val me = RankEntry(myId, nickname, rate, session.accumulatedMs, session.runningSinceMs, isMe = true)
-            .let { it.copy(amount = it.amountAt(now)) }                                // My live row / 내 실시간 줄
-        return (others + me).sortedByDescending { it.amount }                          // Sort desc / 내림차순
+    private fun otTodayPay(u: RemoteUser, today: LocalDate, now: Long): Double {
+        if (u.otDate != today.toString()) return 0.0                                         // Stale / 오늘 기록 아님
+        val live = if (u.otSince > 0) SalaryCalculator.overtimePay(u.otSince, minOf(now, u.otSince + RemoteUser.MAX_OT_MS), u.hourly) else 0.0 // Running part / 진행분
+        return u.otAccPay + live                                                             // Total / 합계
     }
 
-    /** @return 오늘 날짜 문자열(yyyy-MM-dd) */
-    private fun today(): String = LocalDate.now().toString() // ISO date / ISO 날짜
+    /**
+     * Amount for one user under the selected filter.
+     * 선택한 조건에서 한 사람의 금액.
+     *
+     * @return 금액
+     */
+    private fun amountOf(u: RemoteUser, sel: RankSelection, today: LocalDate, now: Long): Double {
+        val s = u.toSettings()                                                                // Same calculator / 같은 계산기
+        return when (sel.kind) {
+            RankKind.PAY -> when (sel.period) {
+                RankPeriod.TODAY -> SalaryCalculator.regularEarnedOn(s, today, now)            // Today / 오늘
+                RankPeriod.WEEK -> SalaryCalculator.regularEarnedSince(s, WorkCalendar.weekStart(today), now) // Week / 주
+                RankPeriod.MONTH -> SalaryCalculator.regularEarnedSince(s, today.withDayOfMonth(1), now)      // Month / 월
+            }
+            RankKind.OVERTIME_LOSS -> {
+                val t = otTodayPay(u, today, now)                                             // Today OT / 오늘 야근
+                when (sel.period) {
+                    RankPeriod.TODAY -> t
+                    RankPeriod.WEEK -> t + if (u.weekKey == WorkCalendar.weekKey(today)) u.otWeekBase else 0.0   // + past week / 주간 누적
+                    RankPeriod.MONTH -> t + if (u.monthKey == WorkCalendar.monthKey(today)) u.otMonthBase else 0.0 // + past month / 월간 누적
+                }
+            }
+        }
+    }
+
+    /**
+     * Ranking: server users (recently active) + my live row, filtered and sorted.
+     * 랭킹: 최근 7일 접속자 + 내 실시간 줄, 조건 필터 후 정렬.
+     *
+     * @return 랭킹 목록
+     */
+    private fun buildRanking(server: List<RemoteUser>, me: RemoteUser, sel: RankSelection, today: LocalDate, now: Long): List<RankRow> {
+        val cutoff = today.minusDays(7).toString()                                            // Active within 7 days / 7일 이내
+        val others = server.filter { it.uid != me.uid && it.lastDay >= cutoff }               // Drop me & inactive / 나·비활성 제외
+        val pool = (others + me).filter {
+            sel.scope == RankScope.ALL || (me.group.isNotEmpty() && it.group == me.group)     // Group filter / 그룹 필터
+        }.filter { it.monthly > 0 }                                                           // Configured only / 설정 완료자만
+        return pool.map { u ->
+            val st = SalaryCalculator.status(u.toSettings(), now)                             // Status / 상태
+            val otOn = u.otSince > 0 && u.otDate == today.toString()                          // OT running / 야근 중
+            RankRow(u.uid, u.nickname, amountOf(u, sel, today, now), u === me, st == WorkStatus.WORKING || otOn)
+        }.filter { sel.kind == RankKind.PAY || it.amount > 0.0 || it.isMe }                   // Hide zero OT / 야근 0원 숨김
+            .sortedByDescending { it.amount }                                                 // Sort desc / 내림차순
+    }
+
+    /**
+     * Upload my state only when it changes (settings, OT start/stop, new day).
+     * 상태가 바뀔 때만 업로드 → 1인당 하루 쓰기 몇 번 수준.
+     */
+    @OptIn(FlowPreview::class)
+    private fun syncToServer() = viewModelScope.launch {
+        local.distinctUntilChanged()                                                          // Local data, skip duplicates / 로컬 데이터, 중복 무시
+            .debounce(1_500L)                                                                 // Merge rapid taps / 연타 합치기
+            .collect { (s, ot, hist) ->
+                if (s.payAmount <= 0L) return@collect                                         // Not configured / 미설정
+                val today = LocalDate.now(SalaryCalculator.zone)                              // Today / 오늘
+                if (ot.date != today.toString()) return@collect                               // Wait for day roll / 날짜 정리 대기
+                leaderboard.submit(buildMe(s, ot, hist, today))                               // Upload / 업로드
+            }
+    }
 
     private companion object {
-        const val TICK_MS = 1_000L              // Screen refresh period (lower = smoother) / 화면 갱신 주기
+        const val TICK_MS = 1_000L                                  // Screen refresh / 화면 갱신 주기
+        const val CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   // Group code chars / 그룹 코드 문자
     }
 }

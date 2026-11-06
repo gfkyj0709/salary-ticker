@@ -14,8 +14,8 @@ android {
         applicationId = "com.yj.salaryticker" // Play Store ID / 플레이스토어 앱 ID
         minSdk = 26                           // Android 8.0+ / 안드로이드 8.0 이상
         targetSdk = 34                        // Target API / 타겟 API
-        versionCode = 3                       // Internal version / 내부 버전
-        versionName = "0.3.0"                 // Display version / 표시 버전
+        versionCode = 4                       // Internal version / 내부 버전
+        versionName = "0.4.0"                 // Display version / 표시 버전
     }
 
     buildTypes {
@@ -52,6 +52,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")          // Basic icons / 기본 아이콘
     implementation("androidx.compose.ui:ui-tooling-preview")                 // Preview / 프리뷰
     debugImplementation("androidx.compose.ui:ui-tooling")                    // Preview tooling (debug) / 디버그용 툴링
+    testImplementation("junit:junit:4.13.2")                                 // Unit tests / 단위테스트
 
     implementation(platform("com.google.firebase:firebase-bom:33.4.0"))      // Firebase version set / 파이어베이스 버전 묶음
     implementation("com.google.firebase:firebase-firestore")                 // Ranking DB / 랭킹 DB

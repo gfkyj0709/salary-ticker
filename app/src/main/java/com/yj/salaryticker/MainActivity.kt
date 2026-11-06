@@ -57,9 +57,9 @@ class MainActivity : ComponentActivity() {
                 ) { pad ->
                     val m = Modifier.padding(pad) // Respect bars / 바 영역 피하기
                     when (tab) {
-                        0 -> CounterScreen(state, vm::start, vm::stop, vm::reset, { tab = 2 }, m) // Counter / 카운터
-                        1 -> RankingScreen(state, m)                                             // Ranking / 랭킹
-                        else -> SettingsScreen(state.settings, { vm.saveSettings(it); tab = 0 }, m) // Settings / 설정
+                        0 -> CounterScreen(state, { vm.toggleOvertime() }, { vm.resetOvertimeToday() }, { tab = 2 }, m) // Counter / 카운터
+                        1 -> RankingScreen(state, { vm.select(it) }, m)                                                  // Ranking / 랭킹
+                        else -> SettingsScreen(state.settings, { vm.saveSettings(it); tab = 0 }, vm::newGroupCode, m)    // Settings / 설정
                     }
                 }
             }
