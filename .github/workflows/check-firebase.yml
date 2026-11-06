@@ -4,6 +4,8 @@ name: Check Firebase
 
 on:
   workflow_dispatch:
+  push:
+    paths: ['.github/workflows/check-firebase.yml']   # Runs when this file changes / 이 파일 바뀌면 실행
 
 jobs:
   check:
