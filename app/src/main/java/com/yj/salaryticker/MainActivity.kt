@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.yj.salaryticker.ui.MainViewModel
+import com.yj.salaryticker.ui.screens.CaptureScreen
 import com.yj.salaryticker.ui.screens.CounterScreen
 import com.yj.salaryticker.ui.screens.RankingScreen
 import com.yj.salaryticker.ui.screens.SettingsScreen
@@ -51,6 +52,7 @@ class MainActivity : ComponentActivity() {
                         NavigationBar {
                             NavigationBarItem(tab == 0, { tab = 0 }, { Icon(Icons.Filled.Home, null) }, label = { Text("카운터") }) // Counter tab / 카운터 탭
                             NavigationBarItem(tab == 1, { tab = 1 }, { Icon(Icons.Filled.Star, null) }, label = { Text("랭킹") })   // Ranking tab / 랭킹 탭
+                            NavigationBarItem(tab == 3, { tab = 3 }, { Text("📸") }, label = { Text("캡처") })                     // Capture tab / 캡처 탭
                             NavigationBarItem(tab == 2, { tab = 2 }, { Icon(Icons.Filled.Settings, null) }, label = { Text("설정") }) // Settings tab / 설정 탭
                         }
                     }
@@ -59,6 +61,7 @@ class MainActivity : ComponentActivity() {
                     when (tab) {
                         0 -> CounterScreen(state, { vm.toggleLupin() }, { vm.resetLupinToday() }, { vm.toggleOvertime() }, { vm.resetOvertimeToday() }, { tab = 2 }, m) // Counter / 카운터
                         1 -> RankingScreen(state, { vm.select(it) }, m)                                                  // Ranking / 랭킹
+                        3 -> CaptureScreen(m)                                                                                // Capture / 캡처
                         else -> SettingsScreen(state.settings, { vm.saveSettings(it); tab = 0 }, vm::newGroupCode, m)    // Settings / 설정
                     }
                 }
