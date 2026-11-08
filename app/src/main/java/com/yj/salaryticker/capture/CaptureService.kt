@@ -214,7 +214,11 @@ class CaptureService : AccessibilityService() {
                 cur.recycle(); cur = again; curH = rowHashes(cur)           // Replace / 교체
                 m = Stitcher.findShift(prevH.copyOfRange(top, h - bottom), curH.copyOfRange(top, h - bottom), dist, 0.1)
             }
-            if (m.score < 0.6) { reason = "이어 붙이기 실패 (일치율 ${(m.score * 100).toInt()}%)"; cur.recycle(); break } // Give up / 포기
+            if (m.score < 0.6) {                                            // Animated screen? / 애니메이션 화면?
+                val near = Stitcher.findShiftNear(prevH.copyOfRange(top, h - bottom), curH.copyOfRange(top, h - bottom), dist) // Near expected / 예상 거리 근처
+                if (near.score >= 0.25) m = near                            // Accept partial match / 부분 일치 허용
+                else { reason = "이어 붙이기 실패 (일치율 ${(m.score * 100).toInt()}%)"; cur.recycle(); break } // Give up / 포기
+            }
             if (m.shift == 0) {                                             // No movement / 안 움직임
                 cur.recycle()
                 if (++still >= 2) break else continue@loop                  // End only if twice / 2번 연속이면 끝

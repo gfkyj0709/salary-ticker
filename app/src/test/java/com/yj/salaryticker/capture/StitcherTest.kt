@@ -49,4 +49,14 @@ class StitcherTest {
         val b = LongArray(1800) { 999_999_999L + it }
         assertTrue(Stitcher.findShift(a, b, expected = 800).score < 0.1)
     }
+
+    /** 애니메이션으로 일부 행이 바뀌어도 예상 거리 근처에서 찾기. */
+    @Test fun findsShiftWithAnimatedRows() {
+        val a = frame(100).copyOfRange(120, 1920)
+        val b = frame(1000).copyOfRange(120, 1920)
+        for (y in 0 until 1800 step 2) b[y] = 777_000_000L + y            // Half the rows changed / 절반 행 변경
+        assertTrue(Stitcher.findShift(a, b, expected = 900).score < 0.6)    // Strict fails / 엄격 탐색 실패
+        val m = Stitcher.findShiftNear(a, b, expected = 900)
+        assertEquals(900, m.shift)                                           // Near search finds it / 근처 탐색 성공
+    }
 }

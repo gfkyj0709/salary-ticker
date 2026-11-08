@@ -83,5 +83,33 @@ object Stitcher {
         return Match(s, scores[s])
     }
 
+    /**
+     * Fallback for animated screens: best shift only within expected ±[tolerance].
+     * 애니메이션 화면용 보조 탐색: 예상 거리 ±[tolerance] 범위 안에서만 최고점 찾기.
+     * 관성 없는 스와이프라 실제 이동 ≈ 스와이프 거리 → 일부 행이 달라도 위치를 좁혀서 찾을 수 있음.
+     *
+     * @param a 이전 화면 콘텐츠 행 해시
+     * @param b 새 화면 콘텐츠 행 해시
+     * @param expected 예상 이동 거리
+     * @param tolerance 허용 오차 비율 (0.3 = ±30%)
+     * @return 범위 내 최고 결과
+     */
+    fun findShiftNear(a: LongArray, b: LongArray, expected: Int, tolerance: Double = 0.3): Match {
+        val h = minOf(a.size, b.size)                                        // Height / 높이
+        val lo = (expected * (1 - tolerance)).toInt().coerceAtLeast(1)       // Lower bound / 하한
+        val hi = (expected * (1 + tolerance)).toInt().coerceAtMost(h - MIN_COMPARED) // Upper bound / 상한
+        var best = Match(0, 0.0)                                             // Best so far / 현재 최고
+        for (s in lo..hi) {
+            var compared = 0; var same = 0                                   // Counters / 카운터
+            for (y in 0 until h - s) {
+                val rb = b[y]; if (rb == BLANK) continue                     // Skip blank / 빈 행 제외
+                compared++; if (a[y + s] == rb) same++                       // Compare / 비교
+            }
+            val score = if (compared >= MIN_COMPARED) same.toDouble() / compared else 0.0 // Ratio / 일치율
+            if (score > best.score) best = Match(s, score)                   // Keep best / 최고 갱신
+        }
+        return best
+    }
+
     private const val MIN_COMPARED = 8 // Need at least 8 non-blank rows / 최소 비교 행 수
 }
