@@ -152,10 +152,11 @@ class CaptureService : AccessibilityService() {
             button?.visibility = android.view.View.GONE                     // Hide button from shots / 캡처에 안 찍히게
             toast("끝까지 자동으로 내려요 · 볼륨 아래 키로 중지")
             delay(600)                                                      // Let toast/button settle / 잠깐 대기
-            val saved = try { captureLoop() } catch (e: Exception) { toast("캡처 실패: ${e.message}"); emptyList() }
+            val saved = try { captureLoop() } catch (e: Exception) { toast("캡처 오류: ${e.javaClass.simpleName} ${e.message}"); emptyList() }
             button?.visibility = android.view.View.VISIBLE                  // Show again / 다시 표시
             if (saved.isNotEmpty()) {
                 prefs.addRecent(saved)                                      // Remember / 최근 목록
+                delay(2200)                                                 // After diagnostics toast / 진단 토스트 뒤에
                 toast("저장 완료: 이미지 ${saved.size}장 (갤러리 › SalaryTicker)")
             }
         }
@@ -165,49 +166,71 @@ class CaptureService : AccessibilityService() {
      * Scroll-capture-stitch until the end, stop key, or limit.
      * 끝·중지·한도까지 스크롤 → 캡처 → 이어붙이기 반복.
      *
+     * 안정성 장치: (1) 맞추기 실패 시 0.4초 뒤 재촬영 최대 3번 (2) '안 움직임'이 2번 연속일 때만 끝으로 판단.
+     *
      * @return 저장된 이미지 URI 목록
      */
     @RequiresApi(Build.VERSION_CODES.R)
     private suspend fun captureLoop(): List<String> {
         val fast = prefs.fastMode                                           // Mode / 모드
-        val moveMs = if (fast) 180L else 350L                               // Swipe time / 스와이프 시간
-        val settleMs = if (fast) 120L else 900L                             // Wait for render / 렌더 대기
+        val moveMs = if (fast) 320L else 480L                               // Swipe time (incl. wiggle tail) / 스와이프 시간
+        val settleMs = if (fast) 150L else 900L                             // Wait for render / 렌더 대기
         val first = shot() ?: run { toast("이 화면은 캡처가 막혀 있어요"); return emptyList() } // Secure app / 캡처 차단 앱
         val w = first.width; val h = first.height                           // Size / 크기
         val writer = PartWriter(w)                                          // Output builder / 결과 작성기
         var prev = first; var prevH = rowHashes(first)                      // Previous frame / 이전 화면
-        var top = -1; var bottom = 0                                        // Fixed bars / 고정 바
-        var lastScore = 1.0                                                 // Diagnostics / 진단용
-        for (step in 0 until MAX_STEPS) {
-            if (stopRequested) break                                        // User stop / 사용자 중지
+        var top = -1; var bottom = 0                                        // Fixed bars (unknown yet) / 고정 바 (아직 모름)
+        var still = 0                                                       // Consecutive no-move count / 연속 안 움직임
+        var steps = 0                                                       // Successful scrolls / 성공한 스크롤 수
+        var reason = "끝 도달"                                              // Stop reason / 종료 이유
+        loop@ for (step in 0 until MAX_STEPS) {
+            if (stopRequested) { reason = "사용자 중지"; break }            // User stop / 사용자 중지
             val contentH = if (top < 0) h else h - top - bottom             // Content height / 콘텐츠 높이
-            val dist = (contentH * 0.45).toInt()                            // Swipe distance / 스와이프 거리
-            val fromY = (if (top < 0) h * 0.72 else top + contentH * 0.75).toFloat() // Start Y / 시작 Y
+            val dist = (contentH * 0.5).toInt()                             // Swipe distance / 스와이프 거리
+            val fromY = (if (top < 0) h * 0.75 else top + contentH * 0.8).toFloat() // Start Y / 시작 Y
             swipe(w / 2f, fromY, fromY - dist, moveMs)                      // Scroll / 스크롤
             delay(settleMs)                                                 // Settle / 대기
-            val cur = shot() ?: break                                       // Capture / 캡처
-            val curH = rowHashes(cur)                                       // Hash rows / 행 해시
+            var cur = shot() ?: run { reason = "캡처 실패"; null } ?: break // Capture / 캡처
+            var curH = rowHashes(cur)                                       // Hash rows / 행 해시
+
             if (top < 0) {                                                  // First pair: find fixed bars / 첫 비교: 고정 바 찾기
-                if (prevH.contentEquals(curH)) { writer.add(prev, 0, h); top = 0; bottom = 0; break } // Not scrollable / 스크롤 안 됨
+                if (prevH.contentEquals(curH)) {                            // Did not move / 안 움직임
+                    cur.recycle()
+                    if (++still >= 2) { reason = "스크롤 안 되는 화면"; break } else continue@loop // Retry once / 한 번 더
+                }
+                still = 0
                 top = Stitcher.staticTop(prevH, curH)                       // Header / 상단
                 bottom = Stitcher.staticBottom(prevH, curH)                 // Footer / 하단
                 if (top + bottom > h * 0.8) { top = 0; bottom = 0 }         // Implausible → none / 비정상이면 무시
                 writer.add(prev, 0, h - bottom)                             // First frame without footer / 첫 화면 (하단 제외)
             }
+
             val cH = h - top - bottom                                       // Content height / 콘텐츠 높이
-            val m = Stitcher.findShift(
-                prevH.copyOfRange(top, h - bottom), curH.copyOfRange(top, h - bottom), expected = dist,
-            )                                                               // Match / 겹침 찾기
-            lastScore = m.score
-            if (m.shift == 0 && m.score > 0.9) { prev = cur; break }        // Reached end / 끝 도달
-            if (m.score < 0.6) { toast("화면이 바뀌어서 여기까지 저장해요"); break } // Lost track / 추적 실패
+            var m = Stitcher.findShift(prevH.copyOfRange(top, h - bottom), curH.copyOfRange(top, h - bottom), dist, 0.1) // Match / 겹침
+            var tries = 0
+            while (m.score < 0.6 && tries < 3) {                            // Retry: still moving or loading / 재시도
+                delay(400); tries++                                         // Wait / 대기
+                val again = shot() ?: break                                 // Re-capture / 재촬영
+                cur.recycle(); cur = again; curH = rowHashes(cur)           // Replace / 교체
+                m = Stitcher.findShift(prevH.copyOfRange(top, h - bottom), curH.copyOfRange(top, h - bottom), dist, 0.1)
+            }
+            if (m.score < 0.6) { reason = "이어 붙이기 실패 (일치율 ${(m.score * 100).toInt()}%)"; cur.recycle(); break } // Give up / 포기
+            if (m.shift == 0) {                                             // No movement / 안 움직임
+                cur.recycle()
+                if (++still >= 2) break else continue@loop                  // End only if twice / 2번 연속이면 끝
+            }
+            still = 0
             writer.add(cur, top + cH - m.shift, m.shift)                    // New rows only / 새로 보인 줄만 추가
-            if (writer.totalHeight > MAX_TOTAL_HEIGHT) { toast("너무 길어서 여기까지 저장해요"); prev = cur; break } // Limit / 한도
+            steps++
+            if (writer.totalHeight > MAX_TOTAL_HEIGHT) { reason = "최대 길이 도달"; prev.recycleIfNot(first); prev = cur; break } // Limit / 한도
             prev.recycleIfNot(first); prev = cur; prevH = curH              // Advance / 다음으로
         }
-        if (top < 0) writer.add(prev, 0, h - bottom)                        // Only one frame / 한 장뿐
+        if (top < 0) writer.add(prev, 0, h)                                 // Only one frame / 한 장뿐
         else if (bottom > 0) writer.add(prev, h - bottom, bottom)           // Add footer once / 하단 1번 추가
-        return withContext(Dispatchers.IO) { writer.finish() }              // Save / 저장
+        val total = writer.totalHeight                                      // Final height / 최종 높이
+        val uris = withContext(Dispatchers.IO) { writer.finish() }          // Save / 저장
+        toast("$reason · 스크롤 ${steps}번 · 길이 ${"%,d".format(total)}px")   // Diagnostics / 진단 정보
+        return uris
     }
 
     /** Recycle bitmap unless it is [keep]. / [keep]이 아니면 메모리 해제 */
@@ -241,19 +264,22 @@ class CaptureService : AccessibilityService() {
     }
 
     /**
-     * Swipe up, then hold still briefly so the list does not fling.
-     * 위로 스와이프 후 잠깐 멈춰서 관성 스크롤(플링) 방지 → 이동 거리가 예측 가능해짐.
+     * Swipe up, then wiggle in place so the list sees ~zero vertical speed at release (no fling).
+     * 위로 스와이프 후 제자리에서 좌우로 미세하게 흔들기 → 손 뗄 때 세로 속도 0 → 관성(플링) 없음.
+     * (continueStroke 방식은 일부 기기에서 다음 제스처가 막혀서 한 번의 제스처로 처리)
      *
      * @param x X좌표
      * @param fromY 시작 Y
      * @param toY 끝 Y
-     * @param moveMs 이동 시간
+     * @param moveMs 전체 시간 (이동 + 흔들기)
      */
     private suspend fun swipe(x: Float, fromY: Float, toY: Float, moveMs: Long) {
-        val move = GestureDescription.StrokeDescription(Path().apply { moveTo(x, fromY); lineTo(x, toY) }, 0, moveMs, true) // Move / 이동
-        dispatch(GestureDescription.Builder().addStroke(move).build())                   // Send / 전송
-        val hold = move.continueStroke(Path().apply { moveTo(x, toY); lineTo(x, toY + 1) }, 0, 60, false) // Hold / 정지
-        dispatch(GestureDescription.Builder().addStroke(hold).build())                   // Release / 손 떼기
+        val path = Path().apply {
+            moveTo(x, fromY); lineTo(x, toY)                                // Main move / 본 이동
+            for (i in 1..WIGGLES) lineTo(x + if (i % 2 == 1) 12f else -12f, toY) // Wiggle ±12px (< touch slop) / 미세 흔들기
+            lineTo(x, toY)                                                  // Back to center / 원위치
+        }
+        dispatch(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, moveMs)).build()) // Run / 실행
     }
 
     /**
@@ -351,6 +377,7 @@ class CaptureService : AccessibilityService() {
 
     private companion object {
         const val MAX_STEPS = 300            // Safety cap on scroll steps / 스크롤 횟수 상한
+        const val WIGGLES = 24               // Wiggle segments ≈ 40% of path time / 흔들기 구간 수 (경로 시간의 약 40%)
         const val PART_HEIGHT = 8_000        // Rows per saved image / 이미지 1장 최대 높이
         const val MAX_TOTAL_HEIGHT = 120_000 // Total limit (infinite feeds) / 전체 한도 (무한 스크롤 대비)
     }
