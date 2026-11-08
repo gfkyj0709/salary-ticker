@@ -81,7 +81,7 @@ fun CaptureScreen(modifier: Modifier = Modifier) {
             verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(if (enabled) "✅ 캡처 기능 켜짐" else "1. 캡처 기능 켜기", fontWeight = FontWeight.Bold)
             if (!enabled) {
-                Text("설정 › 접근성 › 설치된 앱 › "초당월급 긴 캡처"를 켜줘.\n" +
+                Text("설정 › 접근성 › 설치된 앱 › 「초당월급 긴 캡처」를 켜줘.\n" +
                     "다른 앱을 대신 스크롤하고 화면을 찍으려면 이 권한이 필요해. 캡처는 갤러리에만 저장돼.",
                     style = MaterialTheme.typography.bodySmall)
                 Button(onClick = { ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }, Modifier.fillMaxWidth()) {
